@@ -7,6 +7,11 @@ import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -91,6 +96,7 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
      */
     private String rosterLocation = FileUtil.getUserFilesPath();
     private String rosterIndexFileName = Roster.DEFAULT_ROSTER_INDEX;
+
     // since we can't do a "super(this)" in the ctor to inherit from PropertyChangeSupport, we'll
     // reflect to it.
     // Note that dispose() doesn't act on these.  It isn't clear whether it should...
@@ -103,6 +109,22 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
      * Name of the default roster index file. {@value #DEFAULT_ROSTER_INDEX}
      */
     public static final String DEFAULT_ROSTER_INDEX = "roster.xml"; // NOI18N
+
+    /**
+     * Suffix appended to the default roster index file name to create the backup roster file
+     */
+    public static final String BACKUP_ROSTER_SUFFIX = ".bak";
+
+    /**
+     * Suffix appended to the default roster index file name to create the bad roster file
+     */
+    public static final String BAD_ROSTER_SUFFIX = ".bad";
+
+    /**
+     * Suffix appended to the default roster index file name to create the temporary roster file
+     */
+    public static final String TEMP_ROSTER_SUFFIX = ".tmp";
+
     /**
      * Name for the property change fired when adding a roster entry.
      * {@value #ADD}
@@ -176,24 +198,14 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
     // should be private except that JUnit testing creates multiple Roster objects
     public Roster(String rosterFilename) {
         this();
-        try {
-            // if the rosterFilename passed in is null, create a complete path
-            // to the default roster index before attempting to read
-            if (rosterFilename == null) {
-                rosterFilename = Roster.this.getRosterIndexPath();
-            }
-            Roster.this.readFile(rosterFilename);
-        } catch (IOException | JDOMException e) {
-            log.error("Exception during reading while constructing roster", e);
-            try {
-                JmriJOptionPane.showMessageDialog(null,
-                        Bundle.getMessage("ErrorReadingText") + "\n" + e.getMessage(),
-                        Bundle.getMessage("ErrorReadingTitle"),
-                        JmriJOptionPane.ERROR_MESSAGE);
-            } catch (HeadlessException he) {
-                // ignore inability to display dialog
-            }
+
+        // if the rosterFilename passed in is null, create a complete path
+        // to the default roster index before attempting to read
+        if (rosterFilename == null) {
+            rosterFilename = Roster.this.getRosterIndexPath();
         }
+        loadRosterFile(rosterFilename);
+
     }
 
     /**
@@ -314,7 +326,7 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
         log.trace("numNoGroupEntries returns {}", count);
         return count;
     }
-    
+
     /**
      * Return RosterEntry from a "title" string, ala selection in
      * matchingComboBox.
@@ -433,7 +445,7 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
             return null;
         }
     }
-    
+
     List<RosterEntry> getNoGroupList() {
         List<RosterEntry> result = new ArrayList<>();
 
@@ -445,7 +457,7 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
         log.trace("getNoGroupList returns {} items", result.size());
         return result;
     }
-    
+
     public int getGroupIndex(String group, RosterEntry re) {
         log.trace("getGroupIndex({}, {})", group, re);
         int num = 0;
@@ -465,7 +477,7 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
                 log.trace("getGroupIndex of NOGROUP returns -1");
                 return -1;
             }
-    
+
             for (RosterEntry r : _list) {
                 if (doGroup) {
                     if ((r.getAttribute(getRosterGroupProperty(group)) != null)
@@ -1112,9 +1124,19 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
      * location.
      */
     public void writeRoster() {
-        this.makeBackupFile(this.getRosterIndexPath());
         try {
-            this.writeFile(this.getRosterIndexPath());
+            Path tempFilePath = Path.of(this.getRosterIndexPath() + Roster.TEMP_ROSTER_SUFFIX);
+            this.writeFile(tempFilePath.toString());
+
+            // force the file to disk
+            try (FileChannel channel = FileChannel.open(tempFilePath, StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+
+            // move the old file to the backup location
+            this.makeBackupFile(this.getRosterIndexPath());
+
+            Files.move(tempFilePath, Path.of(this.getRosterIndexPath()), StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             log.error("Exception while writing the new roster file, may not be complete", e);
             try {
@@ -1231,6 +1253,16 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
      * file. This removes any existing roster entries!
      */
     public void reloadRosterFile() {
+        this.loadRosterFile(this.getRosterIndexPath());
+    }
+
+    /**
+     * Update the in-memory Roster to be consistent with the provided roster
+     * file. This removes any existing roster entries!
+     *
+     * @param rosterFilename
+     */
+    private void loadRosterFile(String rosterFilename) {
         // clear existing
         synchronized (_list) {
 
@@ -1239,9 +1271,35 @@ public class Roster extends XmlFile implements RosterGroupSelector, PropertyChan
         this.rosterGroups.clear();
         // and read new
         try {
-            this.readFile(this.getRosterIndexPath());
+            this.readFile(rosterFilename);
         } catch (IOException | JDOMException e) {
-            log.error("Exception during reading while reloading roster", e);
+            // Maybe this is because the file doesn't exist or is corrupted
+            // try the backup file
+            try {
+                this.readFile(rosterFilename + Roster.BACKUP_ROSTER_SUFFIX);
+
+                // if we get here, the backup file is valid, so copy it back to the original file
+                // First rename the bad file to a BAD_ROSTER_SUFFIX
+                Files.move(new File(rosterFilename).toPath(),
+                        new File(rosterFilename + Roster.BAD_ROSTER_SUFFIX).toPath(),
+                        StandardCopyOption.REPLACE_EXISTING);
+
+                // Now copy the backup file to the original file
+                Files.copy(new File(rosterFilename + Roster.BACKUP_ROSTER_SUFFIX).toPath(),
+                        new File(rosterFilename).toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException | JDOMException e2) {
+                // We want to report the error from the initial readFile() call, not the backup
+
+                log.error("Exception during reading while (re)constructing roster", e);
+                try {
+                    JmriJOptionPane.showMessageDialog(null,
+                        Bundle.getMessage("ErrorReadingText") + "\n" + e.getMessage(),
+                    Bundle.getMessage("ErrorReadingTitle"),
+                    JmriJOptionPane.ERROR_MESSAGE);
+                } catch (HeadlessException he) {
+                    // ignore inability to display dialog
+                }
+            }
         }
     }
 

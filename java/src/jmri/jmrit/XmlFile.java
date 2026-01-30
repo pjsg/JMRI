@@ -3,6 +3,8 @@ package jmri.jmrit;
 import java.io.*;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.Calendar;
 import java.util.Date;
 
@@ -316,16 +318,11 @@ public class XmlFile {
             log.info("No {} file to backup", name);
         } else if (file.canWrite()) {
             String backupName = backupFileName(file.getAbsolutePath());
-            File backupFile = findFile(backupName);
-            if (backupFile != null) {
-                if (backupFile.delete()) {
-                    log.debug("deleted backup file {}", backupName);
-                }
-            }
-            if (file.renameTo(new File(backupName))) {
-                log.debug("created new backup file {}", backupName);
-            } else {
-                log.error("could not create backup file {}", backupName);
+            try {
+                Files.move(file.toPath(), new File(backupName).toPath(),
+                           StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                log.error("could not create backup file {}", backupName, e);
             }
         }
     }
