@@ -361,11 +361,25 @@ public class HardcopyWriter extends Writer {
                     continue;
                 }
                 // if no more characters will fit on the line, start new line
+                // But only if there are significant characters left on the line.
                 if (charoffset >= width_including_right_margin) {
-                    newline();
-                    // also start a new page if needed
-                    if (page == null) {
-                        newpage();
+                    // See if there are any non-space characters left
+                    boolean nonSpaceLeft = false;
+                    for (int j = i; j < index + len; j++) {
+                        if (buffer[j] != ' ') {
+                            nonSpaceLeft = true;
+                            break;
+                        }
+                    }
+                    if (nonSpaceLeft) {
+                        newline();
+                        // also start a new page if needed
+                        if (page == null) {
+                            newpage();
+                        }
+                    } else {
+                        // No non-space characters left, so just break the line
+                        break;
                     }
                 }
 
@@ -677,9 +691,13 @@ public class HardcopyWriter extends Writer {
             g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
                     RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-            // Enable Fractional Metrics (Improves character spacing)
-            g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS,
-                    RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+            // Dont Enable Fractional Metrics (Improves character spacing)
+            // The Operations printing 'knows' the number of characters per line
+            // and uses that to determine the width of the text. If we enable
+            // fractional metrics, the width of the text will be different, and
+            // the text may need to wrap.
+            //g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS,
+            //        RenderingHints.VALUE_FRACTIONALMETRICS_ON);
 
             // High Quality Rendering
             g2d.setRenderingHint(RenderingHints.KEY_RENDERING,
